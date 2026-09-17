@@ -1,324 +1,362 @@
-"""Case Study 2: Hospital readmission prediction.
-
-Workflow:
-1. Data loading
-2. Data cleaning/pre-processing
-3. ML model
-4. Training without L2 and with L2 regularization
-5. ROC-AUC evaluation
-6. False-negative analysis
-"""
-
 from pathlib import Path
-import json
-import joblib
+import warnings
 
-import numpy as np
+import joblib
 import pandas as pd
 
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
-    roc_auc_score,
+    accuracy_score,
     classification_report,
     confusion_matrix,
-    roc_curve,
+    roc_auc_score
+)
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+
+warnings.filterwarnings("ignore")
+
+
+# ==================================================
+# 1. DATA LOAD
+# ==================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+DATA_PATH = (
+    BASE_DIR
+    / "data"
+    / "hospital_readmission_dataset.csv"
 )
 
-
-ROOT = Path(__file__).resolve().parents[1]
-RESULTS_DIR = ROOT / "results"
-MODELS_DIR = ROOT / "models"
-
-RESULTS_DIR.mkdir(exist_ok=True)
+MODELS_DIR = BASE_DIR / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 
 
-def make_dataset(n_samples=5000, random_state=42):
-    """Create a reproducible educational dataset if no CSV is supplied."""
+def load_data():
+    print("=" * 60)
+    print("1. DATA LOAD")
+    print("=" * 60)
 
-    rng = np.random.default_rng(random_state)
+    print(f"Checking dataset at:\n{DATA_PATH}")
 
-    data = pd.DataFrame({
-        "age": rng.integers(18, 90, n_samples),
-        "heart_rate": rng.normal(80, 15, n_samples),
-        "systolic_bp": rng.normal(125, 20, n_samples),
-        "previous_visits": rng.poisson(2, n_samples),
-        "num_diagnoses": rng.integers(1, 8, n_samples),
-        "length_of_stay": rng.integers(1, 15, n_samples),
-        "emergency_admission": rng.integers(0, 2, n_samples),
-    })
-
-    score = (
-        0.03 * data["age"]
-        + 0.35 * data["previous_visits"]
-        + 0.25 * data["num_diagnoses"]
-        + 0.08 * data["length_of_stay"]
-        + 0.7 * data["emergency_admission"]
-        + rng.normal(0, 2, n_samples)
-        - 4.5
-    )
-
-    probability = 1 / (1 + np.exp(-score))
-    data["readmitted_30_days"] = (
-        rng.random(n_samples) < probability
-    ).astype(int)
-
-    return data
-
-
-def load_and_clean_data():
-    """Load and clean the hospital readmission dataset."""
-
-    data_dir = ROOT / "data"
-
-    # Find the first CSV file inside data/
-    csv_files = list(data_dir.glob("*.csv"))
-
-    if csv_files:
-        csv_path = csv_files[0]
-        print(f"Loading dataset: {csv_path}")
-        data = pd.read_csv(csv_path)
-    else:
-        print("No CSV found. Creating synthetic dataset.")
-        data = make_dataset()
-
-    # Clean column names
-    data.columns = data.columns.str.strip()
-
-    # Remove duplicate rows
-    data = data.drop_duplicates().copy()
-
-    # Replace infinite values
-    data = data.replace([np.inf, -np.inf], np.nan)
-
-    # Support both possible target names
-    if "readmitted_30_days" in data.columns:
-        target = "readmitted_30_days"
-    elif "readmitted" in data.columns:
-        target = "readmitted"
-    else:
-        raise ValueError(
-            "Target column not found. Expected "
-            "'readmitted_30_days' or 'readmitted'. "
-            f"Available columns: {list(data.columns)}"
+    # Check whether the real dataset exists
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            "\nReal dataset was not found.\n"
+            f"Please place the dataset here:\n{DATA_PATH}"
         )
 
-    X = data.drop(columns=[target])
-    y = pd.to_numeric(data[target], errors="coerce")
+    # Check whether the file is empty
+    if DATA_PATH.stat().st_size == 0:
+        raise ValueError("The dataset file is empty.")
 
-    # Remove rows where target is missing
-    valid_rows = y.notna()
-    X = X.loc[valid_rows].copy()
-    y = y.loc[valid_rows].astype(int)
+    # Load the real dataset
+    df = pd.read_csv(DATA_PATH)
 
-    print(f"Target column: {target}")
-    print(f"Dataset shape: {X.shape}")
-    print(f"Class distribution:\n{y.value_counts()}")
+    if df.empty:
+        raise ValueError("The dataset contains no rows.")
 
-    return X, y
+    print("\nReal dataset loaded successfully.")
+    print(f"Dataset shape: {df.shape}")
+
+    print("\nFirst five rows:")
+    print(df.head())
+
+    print("\nDataset columns:")
+    print(df.columns.tolist())
+
+    return df
 
 
-def create_preprocessor(X):
-    """Create preprocessing for numeric and categorical columns."""
+# ==================================================
+# 2. PRE-PROCESSING / DATA CLEANING
+# ==================================================
 
-    numeric_columns = X.select_dtypes(
-        include=["int64", "float64", "int32", "float32"]
+def clean_data(df):
+    print("\n" + "=" * 60)
+    print("2. PRE-PROCESSING / DATA CLEANING")
+    print("=" * 60)
+
+    target_column = "readmitted_30_days"
+
+    if target_column not in df.columns:
+        raise ValueError(
+            f"Target column '{target_column}' was not found."
+        )
+
+    # Remove duplicate rows
+    duplicate_count = df.duplicated().sum()
+
+    print(f"Duplicate rows found: {duplicate_count}")
+
+    df = df.drop_duplicates()
+
+    # Remove rows where target value is missing
+    missing_target_count = df[target_column].isna().sum()
+
+    print(
+        f"Rows with missing target values: "
+        f"{missing_target_count}"
+    )
+
+    df = df.dropna(subset=[target_column])
+
+    # Separate features and target
+    X = df.drop(columns=[target_column])
+    y = df[target_column]
+
+    print(f"\nCleaned dataset shape: {df.shape}")
+
+    print("\nTarget distribution:")
+    print(y.value_counts())
+
+    # Identify numerical and categorical columns
+    numerical_columns = X.select_dtypes(
+        include=["int64", "float64"]
     ).columns.tolist()
 
     categorical_columns = X.select_dtypes(
         include=["object", "category", "bool"]
     ).columns.tolist()
 
-    numeric_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-    ])
+    print("\nNumerical columns:")
+    print(numerical_columns)
 
-    categorical_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        (
-            "onehot",
-            OneHotEncoder(
-                handle_unknown="ignore",
-                sparse_output=True
+    print("\nCategorical columns:")
+    print(categorical_columns)
+
+    # Numerical preprocessing
+    numerical_pipeline = Pipeline(
+        steps=[
+            (
+                "imputer",
+                SimpleImputer(strategy="median")
             ),
+            (
+                "scaler",
+                StandardScaler()
+            )
+        ]
+    )
+
+    # Categorical preprocessing
+    categorical_pipeline = Pipeline(
+        steps=[
+            (
+                "imputer",
+                SimpleImputer(strategy="most_frequent")
+            ),
+            (
+                "encoder",
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    sparse_output=False
+                )
+            )
+        ]
+    )
+
+    # Combine preprocessing steps
+    preprocessor = ColumnTransformer(
+        transformers=[
+            (
+                "numerical",
+                numerical_pipeline,
+                numerical_columns
+            ),
+            (
+                "categorical",
+                categorical_pipeline,
+                categorical_columns
+            )
+        ]
+    )
+
+    print("\nData cleaning and preprocessing completed.")
+
+    return X, y, preprocessor
+
+
+# ==================================================
+# 3. ML MODEL
+# ==================================================
+
+def create_models():
+    print("\n" + "=" * 60)
+    print("3. ML MODEL")
+    print("=" * 60)
+
+    models = {
+        "Logistic Regression Without L2": LogisticRegression(
+            penalty=None,
+            max_iter=2000,
+            random_state=42
         ),
-    ])
 
-    preprocessor = ColumnTransformer([
-        ("numeric", numeric_pipeline, numeric_columns),
-        ("categorical", categorical_pipeline, categorical_columns),
-    ])
+        "Logistic Regression With L2": LogisticRegression(
+            penalty="l2",
+            max_iter=2000,
+            random_state=42
+        )
+    }
 
-    return preprocessor
+    print("Models created:")
+    for model_name in models:
+        print(f"- {model_name}")
+
+    return models
 
 
-def evaluate_model(
-    name,
+# ==================================================
+# 4. TRAINING WITH AND WITHOUT L2
+# ==================================================
+
+def train_and_evaluate(
+    model_name,
     model,
+    preprocessor,
     X_train,
     X_test,
     y_train,
     y_test
 ):
-    """Train and evaluate one model."""
+    print("\n" + "=" * 60)
+    print(f"4. TRAINING: {model_name}")
+    print("=" * 60)
 
-    model.fit(X_train, y_train)
+    pipeline = Pipeline(
+        steps=[
+            (
+                "preprocessing",
+                preprocessor
+            ),
+            (
+                "model",
+                model
+            )
+        ]
+    )
 
-    probabilities = model.predict_proba(X_test)[:, 1]
-    predictions = (probabilities >= 0.5).astype(int)
+    # Train model
+    pipeline.fit(X_train, y_train)
 
-    tn, fp, fn, tp = confusion_matrix(
+    # Predictions
+    predictions = pipeline.predict(X_test)
+
+    # Probabilities for ROC-AUC
+    probabilities = pipeline.predict_proba(X_test)[:, 1]
+
+    # Accuracy
+    accuracy = accuracy_score(
         y_test,
-        predictions,
-        labels=[0, 1]
-    ).ravel()
+        predictions
+    )
 
-    fpr, tpr, thresholds = roc_curve(
+    # ROC-AUC
+    roc_auc = roc_auc_score(
         y_test,
         probabilities
     )
 
-    metrics = {
-        "model": name,
-        "roc_auc": float(
-            roc_auc_score(y_test, probabilities)
-        ),
-        "accuracy": float(
-            (predictions == y_test).mean()
-        ),
-        "true_negatives": int(tn),
-        "false_positives": int(fp),
-        "false_negatives": int(fn),
-        "true_positives": int(tp),
-        "classification_report": classification_report(
-            y_test,
-            predictions,
-            output_dict=True,
-            zero_division=0
-        ),
-        "roc_curve": {
-            "fpr": fpr.tolist(),
-            "tpr": tpr.tolist(),
-            "thresholds": thresholds.tolist(),
-        },
-    }
+    # Confusion matrix
+    matrix = confusion_matrix(
+        y_test,
+        predictions
+    )
 
-    print(f"\n{'=' * 50}")
-    print(name)
-    print(f"{'=' * 50}")
-    print(f"ROC-AUC: {metrics['roc_auc']:.4f}")
-    print(f"False negatives: {fn}")
-    print(f"False positives: {fp}")
-    print(f"True negatives: {tn}")
-    print(f"True positives: {tp}")
+    true_negative, false_positive, false_negative, true_positive = (
+        matrix.ravel()
+    )
 
+    print("\nAccuracy:")
+    print(round(accuracy, 4))
+
+    print("\nROC-AUC:")
+    print(round(roc_auc, 4))
+
+    print("\nConfusion Matrix:")
+    print(matrix)
+
+    print("\nFalse Negative:")
+    print(false_negative)
+
+    print("\nClassification Report:")
     print(
         classification_report(
             y_test,
-            predictions,
-            zero_division=0
+            predictions
         )
     )
 
-    return metrics
+    # Save trained model
+    filename = (
+        model_name.lower()
+        .replace(" ", "_")
+        + ".joblib"
+    )
 
+    model_path = MODELS_DIR / filename
+
+    joblib.dump(
+        pipeline,
+        model_path
+    )
+
+    print(f"Model saved at: {model_path}")
+
+    return pipeline
+
+
+# ==================================================
+# MAIN PROGRAM
+# ==================================================
 
 def main():
-    # 1-2. Data loading and preprocessing
-    X, y = load_and_clean_data()
+    # 1. Load real dataset
+    df = load_data()
 
+    # 2. Clean and preprocess data
+    X, y, preprocessor = clean_data(df)
+
+    # Split dataset into training and testing data
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
-        test_size=0.2,
+        test_size=0.20,
         random_state=42,
         stratify=y
     )
 
-    preprocessor = create_preprocessor(X)
+    print("\nTraining data size:", len(X_train))
+    print("Testing data size:", len(X_test))
 
-    # 3-4. Logistic Regression without L2 and with L2
-    without_l2 = Pipeline([
-        ("preprocessor", preprocessor),
-        (
-            "model",
-            LogisticRegression(
-                penalty=None,
-                solver="lbfgs",
-                max_iter=2000
-            )
-        ),
-    ])
+    # 3. Create ML models
+    models = create_models()
 
-    with_l2 = Pipeline([
-        ("preprocessor", preprocessor),
-        (
-            "model",
-            LogisticRegression(
-                penalty="l2",
-                C=1.0,
-                solver="lbfgs",
-                max_iter=2000
-            )
-        ),
-    ])
-
-    # 5-6. ROC-AUC and false-negative analysis
-    results = [
-        evaluate_model(
-            "without_l2",
-            without_l2,
+    # 4. Train and evaluate both models
+    for model_name, model in models.items():
+        train_and_evaluate(
+            model_name,
+            model,
+            preprocessor,
             X_train,
             X_test,
             y_train,
             y_test
-        ),
-        evaluate_model(
-            "with_l2",
-            with_l2,
-            X_train,
-            X_test,
-            y_train,
-            y_test
-        ),
-    ]
+        )
 
-    # Save complete metrics
-    with open(
-        RESULTS_DIR / "case_study_2_metrics.json",
-        "w",
-        encoding="utf-8"
-    ) as file:
-        json.dump(results, file, indent=2)
+    print("\n" + "=" * 60)
+    print("ALL STEPS COMPLETED SUCCESSFULLY")
+    print("=" * 60)
 
-    # Save comparison table
-    comparison = pd.DataFrame([
-        {
-            "model": item["model"],
-            "roc_auc": item["roc_auc"],
-            "accuracy": item["accuracy"],
-            "false_negatives": item["false_negatives"],
-            "false_positives": item["false_positives"],
-            "true_negatives": item["true_negatives"],
-            "true_positives": item["true_positives"],
-        }
-        for item in results
-    ])
-
-    comparison.to_csv(
-        RESULTS_DIR / "case_study_2_comparison.csv",
-        index=False
-    )
-
-    print(
-        f"\nResults saved to: {RESULTS_DIR}"
-    )
+    print("\nGenerated model files:")
+    for model_file in MODELS_DIR.glob("*.joblib"):
+        print(model_file.name)
 
 
 if __name__ == "__main__":
