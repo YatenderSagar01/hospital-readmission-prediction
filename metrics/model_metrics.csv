@@ -1,0 +1,3 @@
+model,accuracy,precision,recall,f1_score,roc_auc,true_negative,false_positive,false_negative,true_positive,test_samples
+logistic_regression_without_l2.joblib,0.6486,0.6889,0.8493,0.7607,0.6114,10,28,11,62,111
+logistic_regression_with_l2.joblib,0.6577,0.6923,0.863,0.7683,0.6114,10,28,10,63,111
