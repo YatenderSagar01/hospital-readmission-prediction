@@ -11,6 +11,7 @@ Workflow:
 
 from pathlib import Path
 import json
+import joblib
 
 import numpy as np
 import pandas as pd
@@ -31,7 +32,10 @@ from sklearn.metrics import (
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = ROOT / "results"
+MODELS_DIR = ROOT / "models"
+
 RESULTS_DIR.mkdir(exist_ok=True)
+MODELS_DIR.mkdir(exist_ok=True)
 
 
 def make_dataset(n_samples=5000, random_state=42):
